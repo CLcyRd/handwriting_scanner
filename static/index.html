@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>老电影艺术家手稿 AI 识别系统</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      background: #f6f7fb;
+      color: #1f2430;
+    }
+    .container {
+      max-width: 980px;
+      margin: 32px auto;
+      padding: 0 20px;
+    }
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 8px 24px rgba(16, 24, 40, 0.08);
+      padding: 24px;
+      margin-bottom: 16px;
+    }
+    .row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    button {
+      border: none;
+      border-radius: 8px;
+      padding: 10px 16px;
+      font-size: 14px;
+      cursor: pointer;
+      background: #3559f6;
+      color: #fff;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .hint {
+      font-size: 14px;
+      color: #596780;
+    }
+    .status {
+      font-size: 15px;
+      font-weight: 600;
+      margin-top: 10px;
+    }
+    .results {
+      max-height: 600px;
+      overflow: auto;
+      border: 1px solid #dde3ec;
+      border-radius: 8px;
+      padding: 10px;
+      background: #fafbff;
+    }
+    .page {
+      border-bottom: 1px dashed #d7dcea;
+      padding: 12px 6px;
+    }
+    .page:last-child {
+      border-bottom: none;
+    }
+    .page-title {
+      margin: 0 0 8px;
+      color: #3559f6;
+      font-weight: 600;
+    }
+    .page-text {
+      white-space: pre-wrap;
+      line-height: 1.6;
+      margin: 0;
+    }
+    .download {
+      margin-left: 8px;
+      color: #3559f6;
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .progress-container {
+      width: 100%;
+      background-color: #e0e0e0;
+      border-radius: 8px;
+      margin-bottom: 12px;
+      height: 20px;
+      overflow: hidden;
+      display: none;
+    }
+    .progress-bar {
+      height: 100%;
+      background-color: #3559f6;
+      width: 0%;
+      transition: width 0.3s ease;
+      text-align: center;
+      line-height: 20px;
+      color: white;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <h2>老电影艺术家手稿 AI 识别系统</h2>
+      <p class="hint">上传 PDF 后，系统会逐页识别并实时展示结果，完成后可下载 Word 文档。</p>
+      <div class="row">
+        <input id="pdfInput" type="file" accept="application/pdf">
+        <button id="uploadBtn">上传 PDF</button>
+        <button id="startBtn" disabled>开始识别</button>
+        <button id="pauseBtn" style="display:none; background-color: #f6ad55;">暂停识别</button>
+        <button id="restartBtn" style="display:none; background-color: #f56565;">重新识别</button>
+        <a id="downloadLink" class="download" target="_blank"></a>
+      </div>
+      <p id="status" class="status">状态：等待上传</p>
+    </div>
+    <div class="card">
+      <h3>识别结果预览</h3>
+      <div class="progress-container" id="progressContainer">
+        <div class="progress-bar" id="progressBar">0%</div>
+      </div>
+      <div id="results" class="results"></div>
+    </div>
+  </div>
+
+  <script>
+    const uploadBtn = document.getElementById('uploadBtn')
+    const startBtn = document.getElementById('startBtn')
+    const pauseBtn = document.getElementById('pauseBtn')
+    const restartBtn = document.getElementById('restartBtn')
+    const pdfInput = document.getElementById('pdfInput')
+    const statusEl = document.getElementById('status')
+    const resultsEl = document.getElementById('results')
+    const downloadLink = document.getElementById('downloadLink')
+    const progressContainer = document.getElementById('progressContainer')
+    const progressBar = document.getElementById('progressBar')
+
+    let taskId = ''
+    let totalPages = 0
+    let eventSource = null
+
+    function setStatus(text) {
+      statusEl.textContent = `状态：${text}`
+    }
+
+    function updateProgress(current, total) {
+      const percentage = Math.round((current / total) * 100)
+      progressBar.style.width = `${percentage}%`
+      progressBar.textContent = `${percentage}%`
+    }
+
+    function upsertPage(page, text) {
+      let block = document.getElementById(`page-${page}`)
+      if (!block) {
+        block = document.createElement('div')
+        block.className = 'page'
+        block.id = `page-${page}`
+        block.innerHTML = `<p class="page-title">第 ${page} 页</p><p class="page-text"></p>`
+        resultsEl.appendChild(block)
+      }
+      block.querySelector('.page-text').textContent = text
+    }
+
+    uploadBtn.addEventListener('click', async () => {
+      const file = pdfInput.files[0]
+      if (!file) {
+        setStatus('请先选择 PDF 文件')
+        return
+      }
+      const form = new FormData()
+      form.append('file', file)
+      setStatus('上传中...')
+      resultsEl.innerHTML = ''
+      downloadLink.textContent = ''
+      downloadLink.removeAttribute('href')
+      startBtn.disabled = true
+      startBtn.textContent = '开始识别'
+      pauseBtn.style.display = 'none'
+      restartBtn.style.display = 'none'
+      progressContainer.style.display = 'none'
+      
+      try {
+        const resp = await fetch('/api/upload', { method: 'POST', body: form })
+        const data = await resp.json()
+        if (!resp.ok) {
+          throw new Error(data.detail || '上传失败')
+        }
+        taskId = data.task_id
+        totalPages = data.total_pages
+        setStatus(`上传完成，共 ${data.total_pages} 页`)
+        startBtn.disabled = false
+      } catch (error) {
+        setStatus(`上传失败：${error.message}`)
+      }
+    })
+
+    startBtn.addEventListener('click', () => {
+      if (!taskId) {
+        return
+      }
+      if (eventSource) {
+        eventSource.close()
+      }
+      setStatus('识别进行中...')
+      startBtn.disabled = true
+      startBtn.style.display = 'none'
+      pauseBtn.style.display = 'block'
+      restartBtn.style.display = 'block'
+      
+      progressContainer.style.display = 'block'
+      // Only reset progress if starting from scratch, but here we might be resuming
+      // updateProgress(0, totalPages) 
+      
+      eventSource = new EventSource(`/api/recognize/${taskId}`)
+      eventSource.onmessage = (event) => {
+        const payload = JSON.parse(event.data)
+        if (payload.status === 'processing' && payload.page) {
+          upsertPage(payload.page, payload.text || '')
+          setStatus(`识别中：第 ${payload.page} 页`)
+          updateProgress(payload.page, totalPages)
+          return
+        }
+        if (payload.status === 'completed') {
+          setStatus('识别完成')
+          updateProgress(totalPages, totalPages)
+          if (payload.download_url) {
+            downloadLink.href = payload.download_url
+            downloadLink.textContent = '下载 Word 文档'
+          }
+          eventSource.close()
+          eventSource = null
+          pauseBtn.style.display = 'none'
+          startBtn.style.display = 'block'
+          startBtn.textContent = '识别完成'
+          startBtn.disabled = true
+          return
+        }
+        if (payload.status === 'failed') {
+          setStatus(`识别失败：${payload.message || '未知错误'}`)
+          eventSource.close()
+          eventSource = null
+          pauseBtn.style.display = 'none'
+          startBtn.style.display = 'block'
+          startBtn.disabled = false
+          startBtn.textContent = '重试识别'
+        }
+        if (payload.status === 'paused') {
+             // Handle paused state from server if needed, though usually client initiates pause
+             setStatus('已暂停')
+             eventSource.close()
+             eventSource = null
+        }
+      }
+      eventSource.onerror = () => {
+        // If connection error, we might want to allow resume
+        setStatus('连接中断，请重试')
+        if (eventSource) {
+          eventSource.close()
+          eventSource = null
+        }
+        pauseBtn.style.display = 'none'
+        startBtn.style.display = 'block'
+        startBtn.disabled = false
+        startBtn.textContent = '继续识别'
+      }
+    })
+
+    pauseBtn.addEventListener('click', async () => {
+        if (!taskId) return
+        try {
+            await fetch(`/api/pause/${taskId}`, { method: 'POST' })
+            if (eventSource) {
+                eventSource.close()
+                eventSource = null
+            }
+            setStatus('已暂停')
+            pauseBtn.style.display = 'none'
+            startBtn.style.display = 'block'
+            startBtn.disabled = false
+            startBtn.textContent = '继续识别'
+        } catch (e) {
+            console.error(e)
+            setStatus('暂停失败')
+        }
+    })
+
+    restartBtn.addEventListener('click', async () => {
+        if (!taskId) return
+        if (!confirm('确定要重新开始识别吗？已有的识别结果将丢失。')) return
+        
+        try {
+            await fetch(`/api/restart/${taskId}`, { method: 'POST' })
+            if (eventSource) {
+                eventSource.close()
+                eventSource = null
+            }
+            resultsEl.innerHTML = ''
+            downloadLink.textContent = ''
+            downloadLink.removeAttribute('href')
+            updateProgress(0, totalPages)
+            
+            // Auto start or wait for user? Let's auto start for better UX
+            startBtn.click() 
+            
+        } catch (e) {
+            console.error(e)
+            setStatus('重置失败')
+        }
+    })
+  </script>
+</body>
+</html>
